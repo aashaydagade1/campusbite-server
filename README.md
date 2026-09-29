@@ -1,5 +1,5 @@
 # CampusBite Server
-
+   **Live API:** https://campusbite-server.onrender.com/health
 REST API for a campus mess/tiffin ordering app.
 Stack: Node.js, Express, TypeScript, PostgreSQL (Neon), JWT auth, zod validation.
 
