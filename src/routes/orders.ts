@@ -1,0 +1,16 @@
+import { Router } from "express";
+import { z } from "zod";
+import { pool } from "../db";
+import { requireAuth, requireRole } from "../middleware/auth";
+import { notifyUser, statusMessage } from "../notifications";
+const router=Router();
+const orderSchema=z.object({items:z.array(z.object({menu_item_id:z.number().int(),quantity:z.number().int().min(1).max(20)})).min(1)});
+
+router.post("/",requireAuth,requireRole("student"),async(req,res)=>{const p=orderSchema.safeParse(req.body);if(!p.success)return res.status(400).json({error:p.error.flatten()});const client=await pool.connect();try{await client.query("BEGIN");const ids=p.data.items.map(i=>i.menu_item_id);const {rows:menu}=await client.query("SELECT id,price_paise FROM menu_items WHERE id=ANY($1) AND available=true",[ids]);if(menu.length!==new Set(ids).size)throw new Error("ITEM_UNAVAILABLE");const prices=new Map<number,number>(menu.map(m=>[m.id,m.price_paise]));const total=p.data.items.reduce((s,i)=>s+prices.get(i.menu_item_id)!*i.quantity,0);const {rows:[order]}=await client.query("INSERT INTO orders(user_id,total_paise,payment_method,payment_status) VALUES($1,$2,'cash','pending') RETURNING *",[req.user!.id,total]);for(const i of p.data.items)await client.query("INSERT INTO order_items(order_id,menu_item_id,quantity,price_paise) VALUES($1,$2,$3,$4)",[order.id,i.menu_item_id,i.quantity,prices.get(i.menu_item_id)]);await client.query("COMMIT");const io=req.app.get("io");io?.to(`user:${req.user!.id}`).emit("order:updated",order);io?.to("vendors").emit("order:new",order);res.status(201).json(order);}catch(e:any){await client.query("ROLLBACK");if(e.message==="ITEM_UNAVAILABLE")return res.status(400).json({error:"An item is unavailable"});console.error(e);res.status(500).json({error:"Server error"});}finally{client.release();}});
+
+router.get("/mine",requireAuth,async(req,res)=>{const {rows}=await pool.query("SELECT * FROM orders WHERE user_id=$1 ORDER BY created_at DESC",[req.user!.id]);res.json(rows);});
+router.get("/:id",requireAuth,async(req,res)=>{const {rows}=await pool.query("SELECT * FROM orders WHERE id=$1 AND (user_id=$2 OR $3='vendor')",[req.params.id,req.user!.id,req.user!.role]);rows[0]?res.json(rows[0]):res.status(404).json({error:"Not found"});});
+router.get("/",requireAuth,requireRole("vendor"),async(_req,res)=>{const {rows}=await pool.query("SELECT o.*,u.name AS student_name FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC");res.json(rows);});
+
+router.patch("/:id/status",requireAuth,requireRole("vendor"),async(req,res)=>{const status=z.enum(["confirmed","preparing","ready","completed","cancelled"]).safeParse(req.body.status);if(!status.success)return res.status(400).json({error:"Invalid status"});const {rows}=await pool.query("UPDATE orders SET status=$1,updated_at=now() WHERE id=$2 RETURNING *",[status.data,req.params.id]);if(!rows[0])return res.status(404).json({error:"Not found"});const order=rows[0];const io=req.app.get("io");io?.to(`user:${order.user_id}`).emit("order:updated",order);io?.to("vendors").emit("order:updated",order);const [title,body]=statusMessage(order.status);notifyUser(order.user_id,title,body,{orderId:order.id,status:order.status}).catch(console.error);res.json(order);});
+export default router;
