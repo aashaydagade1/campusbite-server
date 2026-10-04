@@ -1,6 +1,7 @@
 # CampusBite Server — Phase 3
 
 Node.js + Express + TypeScript + PostgreSQL/Neon + JWT.
+https://aashaydagade1.github.io/CampusBite/?
 
 ## Phase 3 endpoints
 - `POST /payments/create-order` — create a local order and Razorpay/mock payment order
